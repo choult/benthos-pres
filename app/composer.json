@@ -1,0 +1,18 @@
+{
+    "name": "choult/benthos-pres",
+    "type": "project",
+    "autoload": {
+        "psr-4": {
+            "Choult\\BenthosPres\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Christopher Hoult",
+            "email": "chris@choult.com"
+        }
+    ],
+    "require": {
+        "monolog/monolog": "^2.8"
+    }
+}

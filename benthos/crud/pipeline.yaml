@@ -1,0 +1,53 @@
+input:
+    label: "frontend"
+    http_server:
+        path: "/v1/{className}/{uuid}"
+        allowed_verbs:
+            - GET
+        sync_response:
+            status: "200"
+            headers:
+                Content-Type: application/json
+
+pipeline:
+    processors:
+        - branch:
+            processors:
+                - switch:
+                    - check: meta("className") == "product"
+                      processors:
+                          - sql_select:
+                                driver: "mysql"
+                                dsn: ${MYSQL_DSN}
+                                table: product
+                                columns: ["*"]
+                                where: uuid = ?
+                                args_mapping: 'root = [ meta("uuid") ]'
+                    - check: meta("className") == "user"
+                      processors:
+                          - sql_select:
+                                driver: "mysql"
+                                dsn: ${MYSQL_DSN}
+                                table: user
+                                columns: ["*"]
+                                where: uuid = ?
+                                args_mapping: 'root = [ meta("uuid") ]'
+                    - check: meta("className") == "manufacturer"
+                      processors:
+                          - sql_select:
+                                driver: "mysql"
+                                dsn: ${MYSQL_DSN}
+                                table: manufacturer
+                                columns: ["*"]
+                                where: uuid = ?
+                                args_mapping: 'root = [ meta("uuid") ]'
+            result_map: 'root = this.index(0)'
+
+output:
+    sync_response:
+        processors:
+            - mapping: |
+                root = this
+
+logger:
+    level: DEBUG

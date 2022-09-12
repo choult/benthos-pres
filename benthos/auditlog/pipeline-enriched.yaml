@@ -1,0 +1,115 @@
+input:
+  kafka:
+    addresses: [ ${KAFKA_INPUT_HOSTS} ]
+    topics: [ ${KAFKA_INPUT_TOPICS} ]
+    consumer_group: ${KAFKA_INPUT_CONSUMER_GROUP}
+    client_id: ${KAFKA_INPUT_CLIENT_ID}
+    checkpoint_limit: 10
+    batching:
+      count: 10
+      period: "1ms"
+
+pipeline:
+  processors:
+    - branch:
+        processors:
+            - branch:
+                request_map: |
+                    root = this
+                    root = if !this.exists("userUuid") { deleted() }
+                processors:
+                    - http:
+                        url: '${CRUD_HOST}/v1/user/${! json("userUuid") }'
+                        verb: GET
+                result_map: root.user = this
+        result_map: |
+            root = this
+            root.userUuid = deleted()
+    - resource: product
+    - branch:
+        request_map: |
+            root = this
+            root = if !this.exists("product") { deleted() }
+        processors:
+            - branch:
+                request_map: |
+                    root = this.product
+                processors:
+                    - archive:
+                        format: "json_array"
+                result_map: root.products = this
+        result_map: |
+            root = this
+            root.product = deleted()
+            root.productUuid = deleted()
+    - branch:
+        request_map: |
+            root = this
+            root = if !this.exists("itemUuids") { deleted() }
+        processors:
+            - branch:
+                request_map: |
+                    root = if this.exists("itemUuids") { this.itemUuids }
+                processors:
+                    - unarchive:
+                        format: "json_array"
+                    - parallel:
+                        cap: 0
+                        processors:
+                            - mapping: |
+                                root.productUuid = this
+                            - resource: product
+                            - mapping: |
+                                root = this.product
+                    - archive:
+                        format: "json_array"
+                result_map: root = this
+        result_map: |
+            root.products = this
+            root.itemUuids = deleted()
+
+processor_resources:
+    - label: product
+      branch:
+          request_map: |
+            root = this
+            root = if !this.exists("productUuid") { deleted() }
+          processors:
+              - branch:
+                  request_map: |
+                    root = this
+                  processors:
+                      - http:
+                          url: '${CRUD_HOST}/v1/product/${! json("productUuid") }'
+                          verb: GET
+                  result_map: root.product = this
+              - log:
+                    level: DEBUG
+                    fields_mapping: 'root = this'
+              - branch:
+                  request_map: |
+                      root = this
+                      root = if !this.exists("product.manufacturerUuid") { deleted() }
+                  processors:
+                      - http:
+                          url: '${CRUD_HOST}/v1/manufacturer/${! json("product.manufacturerUuid") }'
+                          verb: GET
+                  result_map: |
+                    root.product.manufacturer = this
+                    root.product.manufacturerUuid = deleted()
+          result_map: root = this
+
+output:
+  label: auditlog_out
+  kafka:
+    addresses: [ ${KAFKA_OUTPUT_HOSTS} ]
+    topic: ${KAFKA_OUTPUT_TOPIC}
+    client_id: ${KAFKA_OUTPUT_CLIENT_ID}
+    key: ""
+    partitioner: fnv1a_hash
+    compression: none
+    static_headers: {}
+    max_in_flight: 100
+
+logger:
+    level: DEBUG

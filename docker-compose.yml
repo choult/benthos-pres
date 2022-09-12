@@ -1,0 +1,178 @@
+version: "2"
+
+services:
+    db:
+        image: mysql:5.7.20
+        volumes:
+            - "./docker/mysql/SQL:/docker-entrypoint-initdb.d"
+            - "./docker/mysql/conf.d:/etc/mysql/conf.d"
+        environment:
+            MYSQL_ROOT_PASSWORD: hunter2
+            MYSQL_DATABASE: app
+            MYSQL_USER: myuser
+            MYSQL_PASSWORD: mypassword
+            TZ: ${TZ}
+
+    filebeat:
+        image: docker.elastic.co/beats/filebeat:6.8.6
+        depends_on:
+            - kafka
+        environment:
+            - BEAT_STRICT_PERMS=false
+            - KAFKA_HOST=kafka
+            - KAFKA_PORT=29092
+        volumes:
+            - ./docker/filebeat/config/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+            - ./var/log:/var/log
+        entrypoint: filebeat
+
+    zookeeper:
+        image: confluentinc/cp-zookeeper:latest
+        environment:
+            ZOOKEEPER_SERVER_ID: 1
+            ZOOKEEPER_CLIENT_PORT: 12181
+            ZOOKEEPER_TICK_TIME: 2000
+            ZOOKEEPER_INIT_LIMIT: 5
+            ZOOKEEPER_SYNC_LIMIT: 2
+            ZOOKEEPER_SERVERS: zookeeper:12888:13888
+
+    kafka:
+        image: confluentinc/cp-kafka:latest
+        depends_on:
+            - zookeeper
+        ports:
+            - 9092:9092
+        environment:
+            KAFKA_BROKER_ID: 1
+            KAFKA_ZOOKEEPER_CONNECT: zookeeper:12181
+            #NOTE: listeners gets overrided in the run.sh
+            KAFKA_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://kafka:9092
+            KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://${EXTERNAL_IP}:9092,
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+            KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+    sink:
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.2.0
+        environment:
+            - node.name=es01
+            - cluster.name=log-cluster
+            - bootstrap.memory_lock=true
+            - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+            - "network.host="
+            - "transport.host=127.0.0.1"
+            - "http.host=0.0.0.0"
+            - "xpack.security.enabled=false"
+            - "cluster.routing.allocation.disk.threshold_enabled=false"
+        ulimits:
+            memlock:
+                soft: -1
+                hard: -1
+        ports:
+            - 9200:9200
+
+    sink-dashboard:
+        image: docker.elastic.co/kibana/kibana:6.8.6
+        volumes:
+            - ./docker/kibana/kibana.yml:/usr/share/kibana/config/kibana.yml
+        ports:
+            - 5601:5601
+
+    applog-sink:
+        image: jeffail/benthos:4.6
+        volumes:
+            - ./benthos/essink/pipeline.yaml:/pipeline.yaml
+        environment:
+            - KAFKA_INPUT_CLIENT_ID=applog_sink_kafka_input
+            - KAFKA_INPUT_CONSUMER_GROUP=applog_sink_consumer_group
+            - KAFKA_INPUT_HOSTS=kafka:9092
+            - KAFKA_INPUT_TOPICS=app-log
+            - ELASTIC_URLS=http://sink:9200
+            - ELASTIC_INDEX=app-log
+        entrypoint: ./benthos -c pipeline.yaml
+
+    auditlog:
+        image: jeffail/benthos:4.6
+        volumes:
+            - ./benthos/auditlog/pipeline.yaml:/pipeline.yaml
+        environment:
+            - KAFKA_INPUT_CLIENT_ID=auditlog_kafka_input
+            - KAFKA_INPUT_CONSUMER_GROUP=auditlog_consumer_group
+            - KAFKA_INPUT_HOSTS=kafka:9092
+            - KAFKA_INPUT_TOPICS=app-log
+            - KAFKA_OUTPUT_CLIENT_ID=auditlog_kafka_output
+            - KAFKA_OUTPUT_HOSTS=kafka:9092
+            - KAFKA_OUTPUT_TOPIC=audit-log
+        entrypoint: ./benthos -c pipeline.yaml
+
+    auditlog-sink:
+        image: jeffail/benthos:4.6
+        volumes:
+            - ./benthos/essink/pipeline.yaml:/pipeline.yaml
+        environment:
+            - KAFKA_INPUT_CLIENT_ID=auditlog_sink_kafka_input
+            - KAFKA_INPUT_CONSUMER_GROUP=auditlog_sink_consumer_group
+            - KAFKA_INPUT_HOSTS=kafka:9092
+            - KAFKA_INPUT_TOPICS=audit-log
+            - ELASTIC_URLS=http://sink:9200
+            - ELASTIC_INDEX=audit-log
+        entrypoint: ./benthos -c pipeline.yaml
+
+    crud:
+        image: jeffail/benthos:4.6
+        volumes:
+            - ./benthos/crud/pipeline.yaml:/pipeline.yaml
+        environment:
+            - MYSQL_DSN=myuser:mypassword@tcp(db:3306)/app
+        entrypoint: ./benthos -c pipeline.yaml
+        ports:
+            - 8001:4195
+
+    auditlog-enriched:
+        image: jeffail/benthos:4.6
+        volumes:
+            - ./benthos/auditlog/pipeline-enriched.yaml:/pipeline.yaml
+        environment:
+            - KAFKA_INPUT_CLIENT_ID=auditlog_enriched_kafka_input
+            - KAFKA_INPUT_CONSUMER_GROUP=auditlog_enriched_consumer_group
+            - KAFKA_INPUT_HOSTS=kafka:9092
+            - KAFKA_INPUT_TOPICS=audit-log
+            - KAFKA_OUTPUT_CLIENT_ID=auditlog_enriched_kafka_output
+            - KAFKA_OUTPUT_HOSTS=kafka:9092
+            - KAFKA_OUTPUT_TOPIC=audit-log-enriched
+            - CRUD_HOST=http://crud:4195
+        entrypoint: ./benthos -c pipeline.yaml
+
+    auditlog-enriched-sink:
+        image: jeffail/benthos:4.6
+        volumes:
+            - ./benthos/essink/pipeline.yaml:/pipeline.yaml
+        environment:
+            - KAFKA_INPUT_CLIENT_ID=auditlog_enriched_sink_kafka_input
+            - KAFKA_INPUT_CONSUMER_GROUP=auditlog_enriched_sink_consumer_group
+            - KAFKA_INPUT_HOSTS=kafka:9092
+            - KAFKA_INPUT_TOPICS=audit-log-enriched
+            - ELASTIC_URLS=http://sink:9200
+            - ELASTIC_INDEX=audit-log-enriched
+        entrypoint: ./benthos -c pipeline.yaml
+
+    app:
+        image: php:8.1-apache
+        volumes:
+            - ./app:/var/www/html    
+            - ./var/log:/var/log/
+        ports:
+            - 8000:80
+    generator:
+        image: php:8.1-cli
+        volumes:
+            - ./app:/app
+            - ./var/log:/var/log/
+        entrypoint: ['php', '/app/generator.php']
+    logs:
+        image: busybox
+        depends_on:
+            - filebeat
+            - kafka
+            - sink
+            - sink-dashboard

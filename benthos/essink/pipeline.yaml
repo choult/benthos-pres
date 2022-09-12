@@ -1,0 +1,16 @@
+input:
+  kafka:
+    addresses: [ ${KAFKA_INPUT_HOSTS} ]
+    topics: [ ${KAFKA_INPUT_TOPICS} ]
+    consumer_group: ${KAFKA_INPUT_CONSUMER_GROUP}
+    client_id: ${KAFKA_INPUT_CLIENT_ID}
+    checkpoint_limit: 10
+    batching:
+      count: 10
+      period: "1ms"
+
+output:
+  label: "elastic"
+  elasticsearch:
+    urls: [ ${ELASTIC_URLS} ] 
+    index: ${ELASTIC_INDEX}

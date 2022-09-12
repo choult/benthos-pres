@@ -1,0 +1,48 @@
+input:
+  kafka:
+    addresses: [ ${KAFKA_INPUT_HOSTS} ]
+    topics: [ ${KAFKA_INPUT_TOPICS} ]
+    consumer_group: ${KAFKA_INPUT_CONSUMER_GROUP}
+    client_id: ${KAFKA_INPUT_CLIENT_ID}
+    checkpoint_limit: 10
+    batching:
+      count: 10
+      period: "1ms"
+
+pipeline:
+  processors:
+    - parallel:
+        cap: 0
+        processors:
+            - mapping: |
+                let decoded = this.message.parse_json()
+                root = $decoded
+                root."@timestamp" = this."@timestamp"
+                let map = {
+                    "product": { "view": true },
+                    "checkout": true,
+                    "basket": { "add": true, "remove": true }
+                }
+
+                let mapResult = $map.get($decoded.context.code)
+                root = if $mapResult == null { deleted() }
+            
+            - mapping: |
+                root = this.context
+                root."@timestamp" = this."@timestamp"
+                root.loggedAt = this.datetime
+                root.event = this.context.code
+                root.code = deleted()
+                root.datetime = deleted()
+        
+output:
+  label: auditlog_out
+  kafka:
+    addresses: [ ${KAFKA_OUTPUT_HOSTS} ]
+    topic: ${KAFKA_OUTPUT_TOPIC}
+    client_id: ${KAFKA_OUTPUT_CLIENT_ID}
+    key: ""
+    partitioner: fnv1a_hash
+    compression: none
+    static_headers: {}
+    max_in_flight: 100
